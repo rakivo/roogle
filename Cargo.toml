@@ -1,0 +1,12 @@
+[package]
+name = "roogle"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+proc-macro2 = { version = "1.0.88", default-features = false, features = ["span-locations"] }
+syn = { version = "2.0.79", default-features = false, features = ["full", "parsing", "printing"] }
+
+[[bin]]
+name = "roogle"
+path = "main.rs"
