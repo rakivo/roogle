@@ -162,7 +162,7 @@ fn skip_self(stream: &ParseBuffer) {
 
 impl Parse for FnSignature {
     fn parse(input: ParseStream) -> syn::Result::<Self> {
-        input.parse::<Token![fn]>().unwrap();
+        input.parse::<Token![fn]>()?;
         
         let name = if input.peek(Ident) {
             Some(unsafe { input.parse::<Ident>().unwrap_unchecked() }.to_string())
@@ -188,7 +188,7 @@ impl Parse for FnSignature {
             let fnarg = if content.is_empty() {
                 FnArg(DEFAULT_ARG_NAME.into_token_stream(), Box::new(arg_name))
             } else {
-                let ty = content.parse::<Type>().unwrap();
+                let ty = content.parse::<Type>()?;
                 FnArg(arg_name, Box::new(ty.into_token_stream()))
             };
 
@@ -198,8 +198,8 @@ impl Parse for FnSignature {
         }
 
         let output = if input.peek(Token![->]) {
-            input.parse::<Token![->]>().unwrap();
-            ReturnType::Type(Token![->](Span::call_site()), Box::new(input.parse().unwrap()))
+            input.parse::<Token![->]>()?;
+            ReturnType::Type(Token![->](Span::call_site()), Box::new(input.parse()?))
         } else {
             ReturnType::Default
         };
@@ -307,9 +307,10 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE
     }
 
-    let dir = DirRec::new(".");
+    let dir = DirRec::new("..");
     let contents = dir.into_iter()
         .par_bridge()
+        .filter(|e| e.extension().unwrap_or_default().eq("rs"))
         .filter_map(|e| {
             read_to_string(&e).ok().map(|code| (e, code))
         }).collect::<Vec::<_>>();
