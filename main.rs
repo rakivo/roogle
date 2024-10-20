@@ -24,7 +24,6 @@ use syn::{
     ReturnType,
     Item as SynItem,
     spanned::Spanned,
-    parse::ParseBuffer,
     punctuated::Punctuated,
     parse::{Parse, ParseStream},
 };
@@ -32,20 +31,26 @@ use syn::{
 mod dir_rec;
 use dir_rec::*;
 
-struct FnArg(TokenStream, Box::<TokenStream>);
+struct FnArg {
+    name: Option::<TokenStream>,
+    ty: Option::<Box::<TokenStream>>
+}
 
 impl Debug for FnArg {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let ref name = self.0;
-        let ref ty = self.1;
-        write!(f, "\"{name}\": {ty}", ty = ty.to_token_stream())
+        let ty = self.ty.to_token_stream();
+        if let Some(ref name) = self.name {
+            write!(f, "\"{name}\": {ty}")
+        } else {
+            write!(f, "[null]: {ty}")
+        }
     }
 }
 
 impl ToTokens for FnArg {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        let name = &self.0;
-        let ty = &self.1;
+        let name = &self.name;
+        let ty = &self.ty;
         tokens.extend(quote!(#name: #ty));
     }
 }
@@ -77,9 +82,13 @@ fn signature_get_inputs(inputs: Punctuated::<syn::FnArg, Token![,]>) -> Vec::<Fn
             syn::FnArg::Receiver(..) => None,
             syn::FnArg::Typed(PatType { pat, ty, .. }) => {
                 if let Pat::Ident(PatIdent { ident, .. }) = *pat {
-                    Some(FnArg(ident.into_token_stream(), Box::new(ty.to_token_stream())))
+                    let name = Some(ident.into_token_stream());
+                    let ty = Some(Box::new(ty.to_token_stream()));
+                    Some(FnArg{name, ty})
                 } else {
-                    Some(FnArg(DEFAULT_ARG_NAME.into_token_stream(), Box::new(ty.to_token_stream())))
+                    let name = None;
+                    let ty = Some(Box::new(ty.to_token_stream()));
+                    Some(FnArg{name, ty})
                 }
             }
         }
@@ -102,13 +111,6 @@ impl From::<Signature> for FnSignature {
     }
 }
 
-fn output_to_string(output: &ReturnType) -> String {
-    match output {
-        ReturnType::Default => DEFAULT_OUTPUT,
-        ReturnType::Type(.., ty) => quote::quote!(#ty).to_string()
-    }
-}
-
 impl From::<ImplItemFn> for FnSignature {
     fn from(item: ImplItemFn) -> Self {
         let name = Some(item.sig.ident.to_string());
@@ -118,35 +120,29 @@ impl From::<ImplItemFn> for FnSignature {
     }
 }
 
-impl Hash for FnSignature {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        for FnArg(.., ty) in self.inputs.iter() {
-            let type_string = quote::quote!(#ty).to_string();
-            type_string.hash(state);
-        }
-        let output_string = output_to_string(&self.output);
-        output_string.hash(state);
-    }
+#[inline]
+fn inputs_to_string(inputs: &Vec::<FnArg>) -> Vec::<String> {
+    inputs.iter().map(|FnArg{ty, ..}| quote::quote!(#ty).to_string()).collect()
 }
 
-const DEFAULT_OUTPUT: String = String::new();
-const DEFAULT_ARG_NAME: String = String::new();
+impl Hash for FnSignature {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        inputs_to_string(&self.inputs).hash(state);
+        self.output.to_token_stream().to_string().hash(state);
+    }
+}
 
 impl PartialEq for FnSignature {
     fn eq(&self, other: &Self) -> bool {
         if self.inputs.len() != other.inputs.len() { return false }
-
-        fn inputs_to_string(inputs: &Vec::<FnArg>) -> Vec::<String> {
-            inputs.iter().map(|ty| quote::quote!(#ty).to_string()).collect()
-        }
 
         let self_input_types = inputs_to_string(&self.inputs);
         let other_input_types = inputs_to_string(&other.inputs);
 
         if self_input_types != other_input_types { return false }
 
-        let self_output = output_to_string(&self.output);
-        let other_output = output_to_string(&other.output);
+        let self_output = self.output.to_token_stream().to_string();
+        let other_output = other.output.to_token_stream().to_string();
 
         self_output == other_output
     }
@@ -154,57 +150,58 @@ impl PartialEq for FnSignature {
 
 impl Eq for FnSignature {}
 
-fn skip_self(stream: &ParseBuffer) {
-    _ = stream.parse::<Token![&]>();
-    _ = stream.parse::<Token![self]>();
-    _ = stream.parse::<Token![,]>();
+macro_rules! skip_tokens {
+    ($content: expr, $($t: tt), *) => {
+        $(_ = $content.parse::<Token![$t]>();)*
+    };
+}
+
+impl Parse for FnArg {
+    fn parse(input: ParseStream) -> syn::Result::<Self> {
+        let name = input.parse::<Type>().unwrap();
+        let (name, ty) = if input.peek(Token![:]) {
+            skip_tokens!(input, :);
+            (Some(name.into_token_stream()), Some(input.parse().unwrap()))
+        } else {
+            (None, Some(name))
+        };
+
+        let ty = Some(Box::new(ty.into_token_stream()));
+        Ok(FnArg{name, ty})
+    }
 }
 
 impl Parse for FnSignature {
     fn parse(input: ParseStream) -> syn::Result::<Self> {
-        input.parse::<Token![fn]>()?;
-        
-        let name = if input.peek(Ident) {
-            Some(unsafe { input.parse::<Ident>().unwrap_unchecked() }.to_string())
+        skip_tokens!(input, fn);
+
+        let name: Option::<Ident> = if input.peek(Ident) {
+            Some(input.parse().unwrap())
         } else {
             None
         };
 
         let content;
         syn::parenthesized!(content in input);
-
         let mut inputs = Vec::new();
+
         while !content.is_empty() {
-            let arg_name = if let Ok(ident) = content.parse::<Ident>() {
-                if content.peek(Token![:]) {
-                    _ = content.parse::<Token![:]>();
-                    _ = content.parse::<Token![,]>();
-                } ident.into_token_stream()
+            let fn_arg = content.parse::<FnArg>()?;
+            inputs.push(fn_arg);
+            if content.peek(Token![,]) {
+                content.parse::<Token![,]>()?;
             } else {
-                skip_self(&content);
-                continue
-            };
-
-            let fnarg = if content.is_empty() {
-                FnArg(DEFAULT_ARG_NAME.into_token_stream(), Box::new(arg_name))
-            } else {
-                let ty = content.parse::<Type>()?;
-                FnArg(arg_name, Box::new(ty.into_token_stream()))
-            };
-
-            inputs.push(fnarg);
-            
-            _ = content.parse::<Token![,]>();
+                break;
+            }
         }
 
-        let output = if input.peek(Token![->]) {
-            input.parse::<Token![->]>()?;
-            ReturnType::Type(Token![->](Span::call_site()), Box::new(input.parse()?))
-        } else {
-            ReturnType::Default
-        };
+        let output = input.parse::<ReturnType>().unwrap();
 
-        Ok(FnSignature { name, inputs, output })
+        Ok(FnSignature {
+            name: name.map(|i| i.to_string()),
+            inputs,
+            output,
+        })
     }
 }
 
@@ -307,7 +304,7 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE
     }
 
-    let dir = DirRec::new("..");
+    let dir = DirRec::new(".");
     let contents = dir.into_iter()
         .par_bridge()
         .filter(|e| e.extension().unwrap_or_default().eq("rs"))
@@ -324,3 +321,9 @@ fn main() -> ExitCode {
 
     ExitCode::SUCCESS
 }
+
+/* TODO:
+    Support lifetimes, generics.
+    Differentiate `Hash` functions/maps depending on user's query
+    Make `-> ()` = ``
+*/
