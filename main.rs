@@ -21,15 +21,51 @@ use syn::{
     ImplItem,
     Signature,
     ImplItemFn,
-    ReturnType,
-    Item as SynItem,
     spanned::Spanned,
+    token::{Paren, Brace},
     punctuated::Punctuated,
     parse::{Parse, ParseStream},
 };
 
 mod dir_rec;
 use dir_rec::*;
+
+macro_rules! skip_tokens {
+    ($content: expr, $($t: tt), *) => {
+        $(_ = $content.parse::<Token![$t]>();)*
+    };
+}
+
+enum ReturnType {
+    Default,
+    Type(Box::<Type>)
+}
+
+impl ToTokens for ReturnType {
+    #[inline]
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        *tokens = self.to_token_stream()
+    }
+
+    fn to_token_stream(&self) -> TokenStream {
+        match self {
+            Self::Default => TokenStream::new(),
+            Self::Type(ty) => if matches!(**ty, Type::Tuple(ref t) if t.elems.is_empty()) {
+                TokenStream::new()                    
+            } else {
+                ty.to_token_stream()
+            }
+        }
+    }
+
+    #[inline]
+    fn into_token_stream(self) -> TokenStream
+    where
+        Self: Sized
+    {
+        self.to_token_stream()
+    }
+}
 
 struct FnArg {
     name: Option::<TokenStream>,
@@ -48,10 +84,138 @@ impl Debug for FnArg {
 }
 
 impl ToTokens for FnArg {
+    #[inline]
     fn to_tokens(&self, tokens: &mut TokenStream) {
         let name = &self.name;
         let ty = &self.ty;
         tokens.extend(quote!(#name: #ty));
+    }
+}
+
+struct StructDef {
+    name: Option::<String>,
+    is_tup: bool,
+    fields: syn::Fields,
+}
+
+impl Debug for StructDef {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "name: ")?;
+        if let Some(ref name) = self.name {
+            writeln!(f, "{name},")?
+        } else {
+            writeln!(f, "[null],")?
+        }
+        writeln!(f, "is_tup: {is_tup},", is_tup = self.is_tup)?;
+        for fi in self.fields.iter() {
+            let ty = fi.ty.to_token_stream().to_string();
+            if let Some(ref ident) = fi.ident {
+                let name = ident.to_string();
+                writeln!(f, "{name}: {ty},")?
+            } else {
+                writeln!(f, "[null]: {ty},")?
+            }
+        }
+        Ok(())
+    }
+}
+
+fn parse_optional_named_field(input: ParseStream) -> syn::Result::<syn::Field> {
+    let (ident, colon_token) = if input.peek2(Token![:]) && !input.peek3(Token![:]) {
+        let ident = input.parse::<Ident>().unwrap();
+        let colon_token = input.parse::<Token![:]>().unwrap();
+        (Some(ident), Some(colon_token))
+    } else {
+        (None, None)
+    };
+
+    let ty = if input.is_empty() {
+        Type::Verbatim(TokenStream::new())
+    } else {
+        input.parse::<Type>().unwrap()
+    };
+
+    Ok(syn::Field {
+        attrs: Vec::new(),
+        vis: syn::Visibility::Inherited,
+        ident,
+        colon_token,
+        ty,
+        mutability: syn::FieldMutability::None
+    })
+}
+
+impl Parse for StructDef {
+    fn parse(input: ParseStream) -> syn::Result::<Self> {
+        skip_tokens!(input, struct);
+        let name: Option::<Ident> = if input.peek(Ident) {
+            Some(input.parse().unwrap())
+        } else {
+            None
+        };
+
+        let name = name.map(|i| i.to_string());
+        let lookahead = input.lookahead1();
+        if lookahead.peek(Brace) {
+            let content;
+            let _brace_token = syn::braced!(content in input);
+            let fields = syn::Fields::Named(syn::FieldsNamed {
+                brace_token: _brace_token,
+                named: content.parse_terminated(parse_optional_named_field, Token![,]).unwrap(),
+            });
+            
+            Ok(StructDef {name, is_tup: false, fields})
+        } else if lookahead.peek(Paren) {
+            let content;
+            let _paren_token = syn::parenthesized!(content in input);
+            let fields = syn::Fields::Unnamed(syn::FieldsUnnamed {
+                paren_token: _paren_token,
+                unnamed: content.parse_terminated(syn::Field::parse_unnamed, Token![,]).unwrap()
+            });
+
+            Ok(StructDef {name, is_tup: true, fields})
+        } else if lookahead.peek(syn::Token![;]) {
+            input.parse::<syn::Token![;]>().unwrap();
+            let fields = syn::Fields::Unit;
+
+            Ok(StructDef {name, is_tup: false, fields})
+        } else {
+            Err(lookahead.error())
+        }
+    }
+}
+
+impl PartialEq for StructDef {
+    fn eq(&self, other: &Self) -> bool {
+        if self.fields.len() != other.fields.len() { return false }
+        !self.fields.iter().zip(other.fields.iter()).any(|(s1, s2)| {
+            s1.ty.to_token_stream().to_string() != s2.ty.to_token_stream().to_string()
+        })
+    }
+}
+
+impl Eq for StructDef {}
+
+impl Hash for StructDef {
+    #[inline]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.is_tup.hash(state);
+        self.fields.iter().for_each(|f| f.ty.to_token_stream().to_string().hash(state))
+    }
+}
+
+impl Parse for FnArg {
+    fn parse(input: ParseStream) -> syn::Result::<Self> {
+        let name = input.parse::<Type>().unwrap();
+        let (name, ty) = if input.peek(Token![:]) {
+            skip_tokens!(input, :);
+            (Some(name.into_token_stream()), Some(input.parse().unwrap()))
+        } else {
+            (None, Some(name))
+        };
+
+        let ty = Some(Box::new(ty.into_token_stream()));
+        Ok(FnArg{name, ty})
     }
 }
 
@@ -81,13 +245,12 @@ fn signature_get_inputs(inputs: Punctuated::<syn::FnArg, Token![,]>) -> Vec::<Fn
         match fn_arg {
             syn::FnArg::Receiver(..) => None,
             syn::FnArg::Typed(PatType { pat, ty, .. }) => {
+                let ty = Some(Box::new(ty.to_token_stream()));
                 if let Pat::Ident(PatIdent { ident, .. }) = *pat {
                     let name = Some(ident.into_token_stream());
-                    let ty = Some(Box::new(ty.to_token_stream()));
                     Some(FnArg{name, ty})
                 } else {
                     let name = None;
-                    let ty = Some(Box::new(ty.to_token_stream()));
                     Some(FnArg{name, ty})
                 }
             }
@@ -95,14 +258,16 @@ fn signature_get_inputs(inputs: Punctuated::<syn::FnArg, Token![,]>) -> Vec::<Fn
     }).collect()
 }
 
-fn signature_get_output(output: ReturnType) -> ReturnType {
+#[inline]
+fn signature_get_output(output: syn::ReturnType) -> ReturnType {
     match output {
         syn::ReturnType::Default => ReturnType::Default,
-        syn::ReturnType::Type(_, ty) => ReturnType::Type(Token![->](Span::call_site()), ty),
+        syn::ReturnType::Type(.., ty) => ReturnType::Type(ty),
     }
 }
 
 impl From::<Signature> for FnSignature {
+    #[inline]
     fn from(syn_sig: Signature) -> Self {
         let name = Some(syn_sig.ident.to_string());
         let inputs = signature_get_inputs(syn_sig.inputs);
@@ -112,6 +277,7 @@ impl From::<Signature> for FnSignature {
 }
 
 impl From::<ImplItemFn> for FnSignature {
+    #[inline]
     fn from(item: ImplItemFn) -> Self {
         let name = Some(item.sig.ident.to_string());
         let inputs = signature_get_inputs(item.sig.inputs);
@@ -126,6 +292,7 @@ fn inputs_to_string(inputs: &Vec::<FnArg>) -> Vec::<String> {
 }
 
 impl Hash for FnSignature {
+    #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
         inputs_to_string(&self.inputs).hash(state);
         self.output.to_token_stream().to_string().hash(state);
@@ -150,27 +317,6 @@ impl PartialEq for FnSignature {
 
 impl Eq for FnSignature {}
 
-macro_rules! skip_tokens {
-    ($content: expr, $($t: tt), *) => {
-        $(_ = $content.parse::<Token![$t]>();)*
-    };
-}
-
-impl Parse for FnArg {
-    fn parse(input: ParseStream) -> syn::Result::<Self> {
-        let name = input.parse::<Type>().unwrap();
-        let (name, ty) = if input.peek(Token![:]) {
-            skip_tokens!(input, :);
-            (Some(name.into_token_stream()), Some(input.parse().unwrap()))
-        } else {
-            (None, Some(name))
-        };
-
-        let ty = Some(Box::new(ty.into_token_stream()));
-        Ok(FnArg{name, ty})
-    }
-}
-
 impl Parse for FnSignature {
     fn parse(input: ParseStream) -> syn::Result::<Self> {
         skip_tokens!(input, fn);
@@ -184,23 +330,18 @@ impl Parse for FnSignature {
         let content;
         syn::parenthesized!(content in input);
         let mut inputs = Vec::new();
-
         while !content.is_empty() {
             let fn_arg = content.parse::<FnArg>()?;
             inputs.push(fn_arg);
             if content.peek(Token![,]) {
                 content.parse::<Token![,]>()?;
-            } else {
-                break;
-            }
+            } else { break }
         }
-
-        let output = input.parse::<ReturnType>().unwrap();
 
         Ok(FnSignature {
             name: name.map(|i| i.to_string()),
             inputs,
-            output,
+            output: signature_get_output(input.parse::<syn::ReturnType>().unwrap()),
         })
     }
 }
@@ -209,6 +350,7 @@ impl Parse for FnSignature {
 struct Loc<'a>(&'a PathBuf, usize, usize);
 
 impl<'a > Loc<'a> {
+    #[inline]
     fn from_span(file_path: &'a PathBuf, span: &Span) -> Self {
         let linecol = span.start();
         Loc(file_path, linecol.line, linecol.column)
@@ -229,30 +371,48 @@ impl Debug for Loc<'_> {
     }
 }
 
-type ItemMap<'a> = HashMap::<FnSignature, Loc::<'a>>;
+#[derive(Eq, Hash, Debug, PartialEq)]
+enum Item {
+    StructDef(StructDef),
+    FnSignature(FnSignature)
+}
+
+impl Parse for Item {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        if input.parse::<Token![fn]>().is_ok() {
+            Ok(Item::FnSignature(input.parse::<FnSignature>()?))
+        } else if input.parse::<Token![struct]>().is_ok() {
+            Ok(Item::StructDef(input.parse::<StructDef>()?))
+        } else {
+            panic!("unexpected input: {input}")
+        }
+    }
+}
+
+type ItemMap<'a> = HashMap::<Item, Loc::<'a>>;
 type FileMap<'a> = HashMap::<&'a PathBuf, ItemMap<'a>>;
 
 #[allow(unused)]
-fn get_ident(item: &SynItem) -> Option::<String> {
+fn get_ident(item: &syn::Item) -> Option::<String> {
     match item {
-        SynItem::Const(_const) => Some(_const.ident.to_string()),
-        SynItem::Enum(_enum) => Some(_enum.ident.to_string()),
-        SynItem::ExternCrate(extern_crate) => Some(extern_crate.ident.to_string()),
-        SynItem::Fn(_fn) => Some(_fn.sig.ident.to_string()),
-        SynItem::ForeignMod(..) => None,
-        SynItem::Impl(..) => None,
-        SynItem::Macro(_macro) => if let Some(ref ident) = _macro.ident {
+        syn::Item::Const(_const) => Some(_const.ident.to_string()),
+        syn::Item::Enum(_enum) => Some(_enum.ident.to_string()),
+        syn::Item::ExternCrate(extern_crate) => Some(extern_crate.ident.to_string()),
+        syn::Item::Fn(_fn) => Some(_fn.sig.ident.to_string()),
+        syn::Item::ForeignMod(..) => None,
+        syn::Item::Impl(..) => None,
+        syn::Item::Macro(_macro) => if let Some(ref ident) = _macro.ident {
             Some(ident.to_string())
         } else { None },
-        SynItem::Mod(_mod) => Some(_mod.ident.to_string()),
-        SynItem::Static(_static) => Some(_static.ident.to_string()),
-        SynItem::Struct(_struct) => Some(_struct.ident.to_string()),
-        SynItem::Trait(_trait) => Some(_trait.ident.to_string()),
-        SynItem::TraitAlias(_trait_alias) => Some(_trait_alias.ident.to_string()),
-        SynItem::Type(_type) => Some(_type.ident.to_string()),
-        SynItem::Union(_union) => Some(_union.ident.to_string()),
-        SynItem::Use(_use) => None,
-        SynItem::Verbatim(..) => None,
+        syn::Item::Mod(_mod) => Some(_mod.ident.to_string()),
+        syn::Item::Static(_static) => Some(_static.ident.to_string()),
+        syn::Item::Struct(_struct) => Some(_struct.ident.to_string()),
+        syn::Item::Trait(_trait) => Some(_trait.ident.to_string()),
+        syn::Item::TraitAlias(_trait_alias) => Some(_trait_alias.ident.to_string()),
+        syn::Item::Type(_type) => Some(_type.ident.to_string()),
+        syn::Item::Union(_union) => Some(_union.ident.to_string()),
+        syn::Item::Use(_use) => None,
+        syn::Item::Verbatim(..) => None,
         _ => None
     }
 }
@@ -273,17 +433,25 @@ fn parse<'a>(file_path: &'a PathBuf, code: &String) -> syn::Result::<ItemMap::<'
     let ast = syn::parse_str::<File>(&code)?;
     let size = ast.items.len() / 2;
     let map = ast.items.into_iter().fold(HashMap::with_capacity(size), |mut map, syn_item| {
-        let span = if let SynItem::Fn(ref f) = syn_item { Some(f.span()) } else { None };
+        let span = syn_item.span();
         match syn_item {
-            SynItem::Fn(f) => {
-                let linecol = unsafe { span.unwrap_unchecked() }.start();
-                let loc = Loc(file_path, linecol.line, linecol.column);
+            syn::Item::Fn(f) => {
+                let loc = Loc::from_span(file_path, &span);
                 let sig = FnSignature::from(f.sig);
-                map.insert(sig, loc);
+                map.insert(Item::FnSignature(sig), loc);
             }
-            SynItem::Impl(im) => {
+            syn::Item::Struct(s) => {
+                let loc = Loc::from_span(file_path, &span);
+                let struc = StructDef {
+                    name: Some(s.ident.to_string()),
+                    is_tup: matches!(s.fields, syn::Fields::Unnamed(_)),
+                    fields: s.fields
+                };
+                map.insert(Item::StructDef(struc), loc);
+            }
+            syn::Item::Impl(im) => {
                 impl_get_fns(file_path, im).into_iter().for_each(|(sig, loc)| {
-                    map.insert(sig, loc);
+                    map.insert(Item::FnSignature(sig), loc);
                 })
             }
             _ => {}
@@ -293,8 +461,8 @@ fn parse<'a>(file_path: &'a PathBuf, code: &String) -> syn::Result::<ItemMap::<'
 }
 
 #[inline(always)]
-fn search_for_signature<'a>(sig: &FnSignature, map: &'a FileMap<'a>) -> Vec::<&'a Loc<'a>> {
-    map.iter().filter_map(|(.., item_map)| item_map.get(sig)).collect()
+fn search_for_item<'a>(item: &Item, map: &'a FileMap<'a>) -> Vec::<&'a Loc<'a>> {
+    map.iter().filter_map(|(.., item_map)| item_map.get(&item)).collect()
 }
 
 fn main() -> ExitCode {
@@ -316,14 +484,13 @@ fn main() -> ExitCode {
         parse(file_path, code).ok().map(|map| (file_path, map))
     }).collect::<FileMap>();
 
-    let sig = syn::parse_str::<FnSignature>(&args[1]).unwrap();
-    search_for_signature(&sig, &map).iter().for_each(|loc| println!("{loc}"));
+    let item = syn::parse_str::<Item>(&args[1]).unwrap();
+    search_for_item(&item, &map).iter().for_each(|loc| println!("{loc}"));
 
     ExitCode::SUCCESS
 }
 
 /* TODO:
-    Support lifetimes, generics.
-    Differentiate `Hash` functions/maps depending on user's query
-    Make `-> ()` = ``
+    1. Search not only by types but by names too, but idk how to do that the fastest way
+    2. Support lifetimes, generics.
 */
