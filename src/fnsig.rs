@@ -1,4 +1,5 @@
 use std::hash::{Hash, Hasher};
+use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 
 use quote::ToTokens;
@@ -10,6 +11,7 @@ use syn::{
     parse::{Parse, ParseStream}
 };
 
+use crate::loc::Loc;
 use crate::ReturnType;
 use crate::fnarg::FnArg;
 use crate::{
@@ -24,6 +26,9 @@ pub struct FnSignature {
     inputs: Vec::<FnArg>,
     output: ReturnType
 }
+
+pub type FnSigs<'a> = Vec::<(Loc<'a>, FnSignature)>;
+pub type FnSigMap<'a> = HashMap::<FnSignature, Loc<'a>>;
 
 impl Debug for FnSignature {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {

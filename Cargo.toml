@@ -9,5 +9,5 @@ fst = { version = "0.4.7", default-features = false }
 quote = { version = "1.0.37", default-features = false }
 indexmap = { version = "2.6.0", default-features = false, features = ["rayon"] }
 proc-macro2 = { version = "1.0.88", default-features = false, features = ["span-locations"] }
-syn = { version = "2.0.79", default-features = false, features = ["full", "parsing", "printing"] }
 twox-hash = { version = "2.0.0", default-features = false, features = ["random", "xxhash64"] }
+syn = { version = "2.0.79", default-features = false, features = ["full", "parsing", "printing"] }

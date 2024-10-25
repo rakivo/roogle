@@ -11,6 +11,7 @@ use syn::{
     parse::{Parse, ParseStream}
 };
 
+use crate::loc::Loc;
 use crate::skip_tokens;
 
 pub struct StructDef {
@@ -18,6 +19,8 @@ pub struct StructDef {
     pub is_tup: bool,
     pub fields: syn::Fields
 }
+
+pub type StructDefs<'a> = Vec::<(Loc::<'a>, StructDef)>;
 
 pub fn parse_optional_named_field(input: ParseStream) -> syn::Result::<syn::Field> {
     let (ident, colon_token) = if input.peek2(Token![:]) && !input.peek3(Token![:]) {

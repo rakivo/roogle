@@ -2,7 +2,6 @@ use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::fs::read_to_string;
-use std::collections::HashMap;
 
 use quote::ToTokens;
 use rayon::prelude::*;
@@ -116,40 +115,48 @@ fn impl_get_fns<'a>(file_path: &'a PathBuf, im: ItemImpl) -> Vec::<(FnSignature,
     }).collect()
 }
 
-fn parse<'a>(file_path: &'a PathBuf, code: &String) -> syn::Result::<ItemMap::<'a>> {
+fn parse<'a>(file_path: &'a PathBuf, code: &String) -> syn::Result::<(FnSigs::<'a>, StructDefs::<'a>)> {
     let ast = syn::parse_str::<File>(&code)?;
     let size = ast.items.len() / 2;
-    let map = ast.items.into_iter().fold(HashMap::with_capacity(size), |mut map, syn_item| {
+    let map = ast.items.into_iter().fold((
+        FnSigs::with_capacity(size),
+        StructDefs::with_capacity(size),
+    ), |(mut fnsigs, mut defs), syn_item| {
         let span = syn_item.span();
         match syn_item {
             syn::Item::Fn(f) => {
                 let loc = Loc::from_span(file_path, &span);
                 let sig = FnSignature::from(f.sig);
-                map.insert(Item::FnSignature(sig), loc);
+                fnsigs.push((loc, sig));
             }
             syn::Item::Struct(s) => {
                 let loc = Loc::from_span(file_path, &span);
-                let struc = StructDef {
+                let def = StructDef {
                     name: Some(s.ident.to_string()),
                     is_tup: matches!(s.fields, syn::Fields::Unnamed(_)),
                     fields: s.fields
                 };
-                map.insert(Item::StructDef(struc), loc);
+                defs.push((loc, def));
             }
             syn::Item::Impl(im) => {
                 impl_get_fns(file_path, im).into_iter().for_each(|(sig, loc)| {
-                    map.insert(Item::FnSignature(sig), loc);
+                    fnsigs.push((loc, sig));
                 })
             }
             _ => {}
-        } map
+        } (fnsigs, defs)
     });
     Ok(map)
 }
 
-#[inline(always)]
-fn search_for_item<'a>(item: &Item, map: &'a FileMap<'a>) -> Vec::<&'a Loc<'a>> {
-    map.iter().filter_map(|(.., item_map)| item_map.get(&item)).collect()
+pub type Results<'a, 'b> = Vec::<&'a Loc<'b>>;
+
+fn print_results(results: &Results) {
+    if results.is_empty() {
+        println!("[no results]")
+    } else {
+        results.par_iter().for_each(|loc| println!("{loc}"))
+    }
 }
 
 fn main() -> ExitCode {
@@ -167,40 +174,42 @@ fn main() -> ExitCode {
             read_to_string(&e).ok().map(|code| (e, code))
         }).collect::<Vec::<_>>();
 
-    let map = contents.iter().filter_map(|(file_path, code)| {
-        parse(file_path, code).ok().map(|map| (file_path, map))
-    }).collect::<FileMap>();
+    let mut defs_count = 0;
+    let items = contents.iter().flat_map(|(file_path, code)| {
+        if let Ok((fnsigs, defs)) = parse(file_path, code) {
+            defs_count += defs.len();
+            Some((fnsigs, defs))
+        } else {
+            None
+        }
+    }).collect::<Vec::<_>>();
 
-    let mut mapp = StructDefStore::new();
-    map.values().for_each(|map| {
-        map.iter().for_each(|(item, loc)| {
-            match item {
-                Item::StructDef(ref def) => mapp.insert(def, loc),
-                _ => {}
-            }
-        });
-    });
-
-    mapp.finalize();
-
-    let item = syn::parse_str::<Item>(&args[1]).unwrap();
-    let results = if let Item::StructDef(ref def) = item {
-        def.fields.iter().flat_map(|f| {
-            if let Some(ref ident) = f.ident {
-                mapp.find_by_field_name(&ident.to_string())
-            } else {
-                mapp.find_by_field_type(&f.ty.to_token_stream().to_string())
-            }
-        }).collect()
-    } else {
-        search_for_item(&item, &map)
+    let query_item = syn::parse_str::<Item>(&args[1]).unwrap();
+    match query_item {
+        Item::StructDef(def) => {
+            let mut maps = items.iter().map(|(.., defs)| {
+                let mut map = StructDefMap::new(defs_count);
+                defs.into_iter().for_each(|(loc, def)| map.insert(def, loc));
+                map
+            }).collect::<Vec::<_>>();
+            maps.iter_mut().for_each(|map| map.finalize());
+            let results = def.fields.iter().flat_map(|f| {
+                if let Some(ref ident) = f.ident {
+                    maps.iter().flat_map(|map| map.find_names(&ident.to_string())).collect::<Vec::<_>>()
+                } else {
+                    maps.iter().flat_map(|map| map.find_types(&f.ty.to_token_stream().to_string())).collect::<Vec::<_>>()
+                }
+            }).collect::<Vec::<_>>();
+            print_results(&results);
+        }
+        Item::FnSignature(fnsig) => {
+            let maps = items.into_iter().map(|(fnsigs, ..)| {
+                fnsigs.into_iter().map(|(loc, fnsig)| (fnsig, loc)).collect::<FnSigMap>()
+            }).collect::<Vec::<_>>();
+            let results = maps.iter().filter_map(|map| map.get(&fnsig)).collect::<Vec::<_>>();
+            print_results(&results);
+        }
     };
-
-    if results.is_empty() {
-        println!("[no results]")
-    } else {
-        results.par_iter().for_each(|loc| println!("{loc}"))
-    }
 
     println!{
         "[searched in {count} {files}]",
@@ -212,6 +221,6 @@ fn main() -> ExitCode {
 }
 
 /* TODO:
-    1. Search not only by types but by names too, but idk how to do that the fastest way
-    2. Support lifetimes, generics.
+    1. Support searching by lifetimes, generics.
+    2. Have our own `Fields` type in `StructDef` struct to reduce overhead.
 */

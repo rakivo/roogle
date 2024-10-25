@@ -1,9 +1,5 @@
-use std::path::PathBuf;
-use std::collections::HashMap;
-
 use syn::{Token, parse::{Parse, ParseStream}};
 
-use crate::loc::Loc;
 use crate::fnsig::FnSignature;
 use crate::structdef::StructDef;
 
@@ -24,6 +20,3 @@ impl Parse for Item {
         }
     }
 }
-
-pub type ItemMap<'a> = HashMap::<Item, Loc::<'a>>;
-pub type FileMap<'a> = HashMap::<&'a PathBuf, ItemMap<'a>>;
