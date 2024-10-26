@@ -16,9 +16,9 @@ use crate::ReturnType;
 use crate::fnarg::FnArg;
 use crate::{
     skip_tokens,
-    signature_get_inputs,
+    inputs_to_string,
     signature_get_output,
-    inputs_to_string
+    signature_get_inputs
 };
 
 pub struct FnSignature {

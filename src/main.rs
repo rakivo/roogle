@@ -41,6 +41,16 @@ macro_rules! skip_tokens {
     };
 }
 
+#[inline(always)]
+pub fn to_boxed_string<T: ToTokens>(x: &T) -> Box::<String> {
+    Box::new(x.to_token_stream().to_string().to_lowercase())
+}
+
+#[inline(always)]
+pub fn to_static_str<T: ToTokens>(x: &T) -> &'static str {
+    Box::leak(x.to_token_stream().to_string().to_lowercase().into_boxed_str())
+}
+
 pub enum ReturnType {
     Default,
     Type(Box::<Type>)
@@ -77,9 +87,9 @@ pub fn signature_get_inputs(inputs: Punctuated::<syn::FnArg, Token![,]>) -> Vec:
         match fn_arg {
             syn::FnArg::Receiver(..) => None,
             syn::FnArg::Typed(PatType { pat, ty, .. }) => {
-                let ty = Some(Box::new(ty.to_token_stream()));
+                let ty = Some(to_boxed_string(&ty));
                 if let Pat::Ident(PatIdent { ident, .. }) = *pat {
-                    let name = Some(ident.into_token_stream());
+                    let name = Some(to_boxed_string(&ident));
                     Some(FnArg{name, ty})
                 } else {
                     let name = None;
@@ -131,11 +141,7 @@ fn parse<'a>(file_path: &'a PathBuf, code: &String) -> syn::Result::<(FnSigs::<'
             }
             syn::Item::Struct(s) => {
                 let loc = Loc::from_span(file_path, &span);
-                let def = StructDef {
-                    name: Some(s.ident.to_string()),
-                    is_tup: matches!(s.fields, syn::Fields::Unnamed(_)),
-                    fields: s.fields
-                };
+                let def = StructDef::from(s);
                 defs.push((loc, def));
             }
             syn::Item::Impl(im) => {
@@ -193,11 +199,12 @@ fn main() -> ExitCode {
                 map
             }).collect::<Vec::<_>>();
             maps.iter_mut().for_each(|map| map.finalize());
-            let results = def.fields.iter().flat_map(|f| {
-                if let Some(ref ident) = f.ident {
-                    maps.iter().flat_map(|map| map.find_names(&ident.to_string())).collect::<Vec::<_>>()
+            let Some(iter) = def.fields.par_iter() else { return ExitCode::SUCCESS };
+            let results = iter.flat_map(|f| {
+                if let Some(name) = f.name {
+                    maps.iter().flat_map(|map| map.find_names(name, def.is_tup)).collect::<Vec::<_>>()
                 } else {
-                    maps.iter().flat_map(|map| map.find_types(&f.ty.to_token_stream().to_string())).collect::<Vec::<_>>()
+                    maps.iter().flat_map(|map| map.find_types(f.ty, def.is_tup)).collect::<Vec::<_>>()
                 }
             }).collect::<Vec::<_>>();
             print_results(&results);

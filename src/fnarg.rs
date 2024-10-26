@@ -8,11 +8,11 @@ use syn::{
     parse::{Parse, ParseStream}
 };
 
-use crate::skip_tokens;
+use crate::{skip_tokens, to_boxed_string};
 
 pub struct FnArg {
-    pub name: Option::<TokenStream>,
-    pub ty: Option::<Box::<TokenStream>>
+    pub name: Option::<Box::<String>>,
+    pub ty: Option::<Box::<String>>
 }
 
 impl Debug for FnArg {
@@ -37,15 +37,16 @@ impl ToTokens for FnArg {
 
 impl Parse for FnArg {
     fn parse(input: ParseStream) -> syn::Result::<Self> {
-        let name = input.parse::<Type>().unwrap();
+        let name = input.parse::<Type>()?;
         let (name, ty) = if input.peek(Token![:]) {
             skip_tokens!(input, :);
-            (Some(name.into_token_stream()), Some(input.parse().unwrap()))
+            (Some(name.into_token_stream()), Some(input.parse()?))
         } else {
             (None, Some(name))
         };
 
-        let ty = Some(Box::new(ty.into_token_stream()));
+        let name = name.map(|stream| to_boxed_string(&stream));
+        let ty = Some(to_boxed_string(&ty));
         Ok(FnArg{name, ty})
     }
 }

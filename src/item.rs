@@ -3,7 +3,7 @@ use syn::{Token, parse::{Parse, ParseStream}};
 use crate::fnsig::FnSignature;
 use crate::structdef::StructDef;
 
-#[derive(Eq, Hash, Debug, PartialEq)]
+#[derive(Debug)]
 pub enum Item {
     StructDef(StructDef),
     FnSignature(FnSignature)
