@@ -3,7 +3,7 @@ use std::fmt::{Debug, Display, Formatter};
 
 use proc_macro2::Span;
 
-#[derive(Eq, Hash, PartialEq)]
+#[derive(Eq, Hash, Clone, PartialEq)]
 pub struct Loc<'a>(&'a PathBuf, usize, usize);
 //                 file_path,   line,  column
 

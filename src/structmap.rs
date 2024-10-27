@@ -36,16 +36,19 @@ impl<'a> StructDefMap<'a> {
         }
     }
 
-    pub fn insert(&mut self, def: &'a StructDef, location: &'a Loc<'a>) {
+    pub fn insert(&mut self, def: &'a StructDef, loc: &'a Loc<'a>) {
         def.fields.iter().for_each(|f| {
             if let Some(name) = f.name {
                 self.field_names.insert(name);
             }
-            self.types.entry(f.ty).or_default().insert(location);
+            if let Some(ty) = f.ty {
+                self.types.entry(ty).or_default().insert(loc);
+            }
         });
-        self.all_defs.insert(location, def);
+        self.all_defs.insert(loc, def);
     }
 
+    #[inline]
     pub fn finalize(&mut self) {
         let mut set_builder = SetBuilder::memory();
         self.field_names.iter().for_each(|name| unsafe {
@@ -54,43 +57,34 @@ impl<'a> StructDefMap<'a> {
         self.names = Some(set_builder.into_set());
     }
 
+    #[inline]
     pub fn find_types(&self, field_type: &str, is_tup: bool) -> Vec::<&Loc<'a>> {
-        self.types.get(field_type)
-            .map(|set| {
-                set.par_iter()
-                    .filter_map(|loc| {
-                        if matches!(self.all_defs.get(*loc), Some(ref def) if def.is_tup == is_tup) {
-                            Some(*loc)
-                        } else {
-                            None
-                        }
-                    }).collect()
-            }).unwrap_or_else(Vec::new)
+        self.types.get(field_type).map(|set| {
+            set.par_iter()
+                .filter(|loc| matches!(self.all_defs.get(*loc), Some(def) if def.is_tup == is_tup))
+                .map(std::ops::Deref::deref)
+                .collect()
+        }).unwrap_or_else(Vec::new)
     }
 
     pub fn find_names(&self, field_name: &str, is_tup: bool) -> Vec<&'a Loc<'a>> {
         let mut matches = Vec::new();
-        if let Some(ref names) = self.names {
-            let lower_field_name = field_name.to_lowercase();
-            let automaton = Str::new(&lower_field_name);
-            let stream = names.search(automaton);
-
-            let found_names = stream.into_stream().into_strs().unwrap_or_default();
-
-            for name in found_names {
-                matches.par_extend(
-                    self.all_defs.par_iter().filter_map(|(loc, def)| {
-                        if def.is_tup != is_tup { return None }
-                        let Some(iter) = def.fields.par_iter() else { return None };
-                        if iter.any(|f| f.name.map_or(false, |i| i == name)) {
-                            Some(loc)
-                        } else {
-                            None
-                        }
-                    }),
-                );
-            }
-        }
-        matches
+        let Some(ref names) = self.names else { return matches };
+        let automaton = Str::new(field_name);
+        let stream = names.search(automaton);
+        let Ok(names) = stream.into_stream().into_strs() else { return matches };
+        for name in names {
+            matches.par_extend(
+                self.all_defs.par_iter().filter_map(|(loc, def)| {
+                    if def.is_tup != is_tup { return None }
+                    let Some(iter) = def.fields.par_iter() else { return None };
+                    if iter.any(|f| f.name.map_or(false, |i| i == name)) {
+                        Some(loc)
+                    } else {
+                        None
+                    }
+                })
+            );
+        } matches
     }
 }

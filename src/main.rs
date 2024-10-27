@@ -19,8 +19,6 @@ use syn::{
     punctuated::Punctuated
 };
 
-mod map;
-use map::*;
 mod loc;
 use loc::*;
 mod item;
@@ -29,8 +27,13 @@ mod fnsig;
 use fnsig::*;
 mod fnarg;
 use fnarg::*;
+mod fields;
 mod dir_rec;
 use dir_rec::*;
+mod enumdef;
+use enumdef::*;
+mod structmap;
+use structmap::*;
 mod structdef;
 use structdef::*;
 
@@ -125,13 +128,16 @@ fn impl_get_fns<'a>(file_path: &'a PathBuf, im: ItemImpl) -> Vec::<(FnSignature,
     }).collect()
 }
 
-fn parse<'a>(file_path: &'a PathBuf, code: &String) -> syn::Result::<(FnSigs::<'a>, StructDefs::<'a>)> {
+fn parse<'a>(file_path: &'a PathBuf, code: &String) -> syn::Result::<
+    (FnSigs::<'a>, StructDefs::<'a>, EnumDefs::<'a>)
+> {
     let ast = syn::parse_str::<File>(&code)?;
     let size = ast.items.len() / 2;
     let map = ast.items.into_iter().fold((
         FnSigs::with_capacity(size),
         StructDefs::with_capacity(size),
-    ), |(mut fnsigs, mut defs), syn_item| {
+        EnumDefs::with_capacity(size),
+    ), |(mut fnsigs, mut defs, mut edefs), syn_item| {
         let span = syn_item.span();
         match syn_item {
             syn::Item::Fn(f) => {
@@ -144,13 +150,18 @@ fn parse<'a>(file_path: &'a PathBuf, code: &String) -> syn::Result::<(FnSigs::<'
                 let def = StructDef::from(s);
                 defs.push((loc, def));
             }
+            syn::Item::Enum(e) => {
+                let loc = Loc::from_span(file_path, &span);
+                let def = EnumDef::from(e);
+                edefs.push((loc, def));
+            }
             syn::Item::Impl(im) => {
                 impl_get_fns(file_path, im).into_iter().for_each(|(sig, loc)| {
                     fnsigs.push((loc, sig));
                 })
             }
             _ => {}
-        } (fnsigs, defs)
+        } (fnsigs, defs, edefs)
     });
     Ok(map)
 }
@@ -182,9 +193,9 @@ fn main() -> ExitCode {
 
     let mut defs_count = 0;
     let items = contents.iter().flat_map(|(file_path, code)| {
-        if let Ok((fnsigs, defs)) = parse(file_path, code) {
+        if let Ok((fnsigs, defs, edefs)) = parse(file_path, code) {
             defs_count += defs.len();
-            Some((fnsigs, defs))
+            Some((fnsigs, defs, edefs))
         } else {
             None
         }
@@ -193,22 +204,25 @@ fn main() -> ExitCode {
     let query_item = syn::parse_str::<Item>(&args[1]).unwrap();
     match query_item {
         Item::StructDef(def) => {
-            let mut maps = items.iter().map(|(.., defs)| {
+            let maps = items.iter().map(|(.., defs, _)| {
                 let mut map = StructDefMap::new(defs_count);
                 defs.into_iter().for_each(|(loc, def)| map.insert(def, loc));
+                map.finalize();
                 map
             }).collect::<Vec::<_>>();
-            maps.iter_mut().for_each(|map| map.finalize());
             let Some(iter) = def.fields.par_iter() else { return ExitCode::SUCCESS };
-            let results = iter.flat_map(|f| {
+            let results = iter.filter_map(|f| {
                 if let Some(name) = f.name {
-                    maps.iter().flat_map(|map| map.find_names(name, def.is_tup)).collect::<Vec::<_>>()
+                    Some(maps.iter().flat_map(|map| map.find_names(name, def.is_tup)).collect::<Vec::<_>>())
+                } else if let Some(ty) = f.ty {
+                    Some(maps.iter().flat_map(|map| map.find_types(ty, def.is_tup)).collect::<Vec::<_>>())
                 } else {
-                    maps.iter().flat_map(|map| map.find_types(f.ty, def.is_tup)).collect::<Vec::<_>>()
+                    None
                 }
-            }).collect::<Vec::<_>>();
+            }).flatten().collect::<Vec::<_>>();
             print_results(&results);
         }
+        Item::EnumDef(edef) => todo!(),
         Item::FnSignature(fnsig) => {
             let maps = items.into_iter().map(|(fnsigs, ..)| {
                 fnsigs.into_iter().map(|(loc, fnsig)| (fnsig, loc)).collect::<FnSigMap>()
