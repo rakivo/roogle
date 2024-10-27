@@ -1,9 +1,5 @@
 use syn::{
-    Type,
-    Ident,
-    Token,
-    token::{Brace, Paren},
-    parse::{Parse, ParseStream}
+    parse::{discouraged::AnyDelimiter, Parse, ParseStream}, token::{Brace, Paren}, Ident, Token, Type
 };
 
 use crate::{loc::Loc, skip_tokens};
@@ -36,7 +32,7 @@ impl From::<syn::ItemEnum> for EnumDef {
 }
 
 impl Parse for EnumDef {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
+    fn parse(input: ParseStream) -> syn::Result::<Self> {
         skip_tokens!(input, enum);
         
         let name = if let Ok(ident) = input.parse::<Ident>() {
@@ -49,16 +45,30 @@ impl Parse for EnumDef {
         syn::braced!(content in input);
         
         let mut variants = Vec::new();
-
-        // Parse each variant in the enum
         while !content.is_empty() {
-            // Parse the variant name
-            let variant_name = to_static_str(&content.parse::<Ident>().unwrap());
+            let name = if !(content.peek(Brace) || content.peek(Paren)) {
+                let variant = if content.peek2(Paren) && content.peek2(Paren) {
+                    let var = Variant {name, fields: Fields::Named(vec![Field {
+                        name: Some(to_static_str(&content.parse::<Ident>().unwrap())),
+                        ty: None
+                    }])};
+                    _ = content.parse_any_delimiter();
+                    _ = content.parse_any_delimiter();
+                    var
+                } else {
+                    Variant {name, fields: Fields::Unnamed(vec![Field {
+                        name: None,
+                        ty: Some(to_static_str(&content.parse::<Type>().unwrap()))
+                    }])}
+                };
+                variants.push(variant);
+                break
+            } else {
+                content.parse::<Ident>().as_ref().map(to_static_str).ok()
+            };
 
-            // Determine the type of fields for this variant
             let lookahead = content.lookahead1();
             let fields = if lookahead.peek(Brace) {
-                // Parse named fields
                 let inner_content;
                 syn::braced!(inner_content in content);
                 let mut fields = Vec::new();
@@ -70,26 +80,30 @@ impl Parse for EnumDef {
                 }
                 Fields::Named(fields)
             } else if lookahead.peek(Paren) {
-                // Parse unnamed fields
-                let inner_content;
-                syn::parenthesized!(inner_content in content);
-                let mut fields = Vec::new();
-                while !inner_content.is_empty() {
-                    let ty = Some(to_static_str(&inner_content.parse::<Type>().unwrap()));
-                    fields.push(Field { name: None, ty });
-                    if inner_content.is_empty() { break; }
-                    inner_content.parse::<Token![,]>().unwrap();
+                if content.peek2(Paren) {
+                    content.parse_any_delimiter().unwrap();
+                    Fields::Unit
+                } else {
+                    let inner_content;
+                    syn::parenthesized!(inner_content in content);
+                    let mut fields = Vec::new();
+                    while !inner_content.is_empty() {
+                        let ty = Some(to_static_str(&inner_content.parse::<Type>().unwrap()));
+                        fields.push(Field { name: None, ty });
+                        if inner_content.is_empty() { break; }
+                        inner_content.parse::<Token![,]>().unwrap();
+                    }
+                    Fields::Unnamed(fields)
                 }
-                Fields::Unnamed(fields)
             } else {
-                // Unit variant
-                Fields::Unit
+                Fields::Unnamed(vec![Field {
+                    name: None,
+                    ty: Some(to_static_str(&content.parse::<Type>().unwrap()))
+                }])
             };
 
-            // Add the parsed variant to the list
-            variants.push(Variant { name: Some(variant_name), fields });
+            variants.push(Variant {name, fields});
 
-            // Parse optional comma after each variant
             if content.peek(Token![,]) {
                 content.parse::<Token![,]>().unwrap();
             }
