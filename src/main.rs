@@ -32,6 +32,8 @@ mod dir_rec;
 use dir_rec::*;
 mod enumdef;
 use enumdef::*;
+mod enummap;
+use enummap::*;
 mod structmap;
 use structmap::*;
 mod structdef;
@@ -191,10 +193,11 @@ fn main() -> ExitCode {
             read_to_string(&e).ok().map(|code| (e, code))
         }).collect::<Vec::<_>>();
 
-    let mut defs_count = 0;
+    let (mut edefs_count, mut defs_count) = (0, 0);
     let items = contents.iter().flat_map(|(file_path, code)| {
         if let Ok((fnsigs, defs, edefs)) = parse(file_path, code) {
             defs_count += defs.len();
+            edefs_count = edefs.len();
             Some((fnsigs, defs, edefs))
         } else {
             None
@@ -222,7 +225,29 @@ fn main() -> ExitCode {
             }).flatten().collect::<Vec::<_>>();
             print_results(&results);
         }
-        Item::EnumDef(edef) => todo!(),
+        Item::EnumDef(edef) => {
+            let maps = items.iter().map(|(.., _, enums)| {
+                let mut map = EnumDefMap::new(edefs_count);
+                enums.into_iter().for_each(|(loc, enum_def)| map.insert(enum_def, loc));
+                map
+            }).collect::<Vec<_>>();
+
+            let results = edef.variants.par_iter().flat_map(|variant| {
+                let mut results = variant.fields.iter().filter_map(|f| {
+                    if let Some(name) = f.name {
+                        Some(maps.iter().flat_map(|map| map.find_names(name)).collect::<Vec<_>>())
+                    } else if let Some(ty) = f.ty {
+                        Some(maps.iter().flat_map(|map| map.find_types(ty)).collect::<Vec<_>>())
+                    } else {
+                        None
+                    }
+                }).flatten().collect::<Vec<_>>();
+                if let Some(name) = variant.name {
+                    results.extend(maps.iter().flat_map(|map| map.find_names(name)).collect::<Vec<_>>());
+                } results
+            }).collect::<Vec<_>>();
+            print_results(&results);
+        },
         Item::FnSignature(fnsig) => {
             let maps = items.into_iter().map(|(fnsigs, ..)| {
                 fnsigs.into_iter().map(|(loc, fnsig)| (fnsig, loc)).collect::<FnSigMap>()
