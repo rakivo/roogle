@@ -267,6 +267,6 @@ fn main() -> ExitCode {
 }
 
 /* TODO:
-    1. Support searching by lifetimes, generics.
-    2. Have our own `Fields` type in `StructDef` struct to reduce overhead.
+    (#1) Support searching by lifetimes, generics.
+    (#3) Support recursive types for enums
 */
