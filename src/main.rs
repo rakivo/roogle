@@ -30,6 +30,7 @@ use fnarg::*;
 mod fields;
 mod dir_rec;
 use dir_rec::*;
+mod enummap;
 mod enumdef;
 use enumdef::*;
 mod structmap;
@@ -225,7 +226,7 @@ fn main() -> ExitCode {
         }
         Item::EnumDef(edef) => {
             let edefs = items.into_iter().flat_map(|(.., edefs)| edefs).collect::<Vec::<_>>();
-            print_results(&EnumDef::search_enum_def(&edef, &edefs));
+            EnumDef::search_enum_def(&edef, &edefs);
         },
         Item::FnSignature(fnsig) => {
             let maps = items.into_iter().map(|(fnsigs, ..)| {

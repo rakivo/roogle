@@ -1,3 +1,4 @@
+use rayon::prelude::*;
 use syn::{
     Type,
     Ident,
@@ -10,9 +11,10 @@ use syn::{
     }
 };
 
-use crate::loc::Loc;
+use crate::{loc::Loc, print_results};
 use crate::fields::*;
-use crate::{Results, skip_tokens, to_static_str};
+use crate::enummap::*;
+use crate::{skip_tokens, to_static_str};
 
 #[derive(Debug)]
 pub struct Variant {
@@ -27,58 +29,45 @@ pub struct EnumDef {
 }
 
 impl EnumDef {
-    pub fn search_enum_def<'a>(query: &'a EnumDef, enums: &'a EnumDefs) -> Results<'a, 'a> {
-        enums.iter()
-            .filter(|(.., enum_def)| Self::matches_enum_def(query, enum_def))
-            .map(|(loc, ..)| loc)
-            .collect()
-    }
+    pub fn search_enum_def<'a>(query: &'a EnumDef, enums: &'a EnumDefs) {
+        let cache = EnumMap::new(enums);
 
-    fn matches_enum_def(query: &EnumDef, enum_def: &EnumDef) -> bool {
-        if query.name.map_or(false, |q_name| {
-            enum_def.name.map_or(false, |name| name == q_name)
-        }) {
-            return true
-        }
+        let mut vnames = Vec::new();
+        let mut name_candidates = query.variants
+            .iter()
+            .flat_map(|variant| {
+                if let Some(vname) = variant.name {
+                    vnames.push(vname);
+                }
+                variant.fields.iter()
+            }).filter_map(|f| f.name)
+            .flat_map(|name| cache.name_map.get(name))
+            .flatten()
+            .collect::<Vec<_>>();
 
-        query.variants.iter().any(|q_variant| {
-            enum_def.variants.iter().any(|v| Self::matches_variant(q_variant, v))
-        })
-    }
-
-    fn matches_variant(query: &Variant, variant: &Variant) -> bool {
-        if query.name.map_or(false, |q_name| {
-            variant.name.map_or(false, |name| name == q_name)
-        }) {
-            return true
-        }
-
-        Self::matches_fields(&query.fields, &variant.fields)
-    }
-
-    fn matches_fields(query: &Fields, fields: &Fields) -> bool {
-        match (query, fields) {
-            (Fields::Unit, Fields::Unit) => true,
-            (Fields::Named(query_fields), Fields::Named(fields)) 
-            | (Fields::Unnamed(query_fields), Fields::Unnamed(fields)) => {
-                query_fields.iter().any(|q_field| {
-                    fields.iter().any(|field| Self::matches_field(q_field, field))
-                })
+        if let Some(name) = query.name {
+            if let Some(result) = cache.name_map.get(name) {
+                name_candidates.par_extend(result);
             }
-            _ => false,
-        }
-    }
-
-    fn matches_field(query: &Field, field: &Field) -> bool {
-        if query.name.map_or(false, |q_name| {
-            field.name.map_or(false, |name| name == q_name)
-        }) {
-            return true
         }
 
-        query.ty.map_or(false, |q_ty| {
-            field.ty.map_or(false, |ty| ty == q_ty)
-        })
+        name_candidates.par_extend(vnames.into_par_iter().filter_map(|name| cache.name_map.get(name)).flatten());
+
+        let type_candidates = query.variants
+            .iter()
+            .flat_map(|variant| variant.fields.iter())
+            .filter_map(|f| f.ty)
+            .flat_map(|ty| cache.type_map.get(ty))
+            .flatten()
+            .collect::<Vec<_>>();
+
+        let results = name_candidates
+            .into_iter()
+            .chain(type_candidates)
+            .map(std::ops::Deref::deref)
+            .collect();
+
+        print_results(&results);
     }
 }
 

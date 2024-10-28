@@ -20,6 +20,7 @@ pub type Types<'a> = IndexMap::<
 
 pub type Xx64Hasher = BuildHasherDefault::<XxHash64>;
 
+#[derive(Debug)]
 pub struct StructDefMap<'a> {
     types: Types<'a>,
     names: Option::<Names<'a>>,
