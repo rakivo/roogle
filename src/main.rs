@@ -32,8 +32,6 @@ mod dir_rec;
 use dir_rec::*;
 mod enumdef;
 use enumdef::*;
-mod enummap;
-use enummap::*;
 mod structmap;
 use structmap::*;
 mod structdef;
@@ -226,27 +224,8 @@ fn main() -> ExitCode {
             print_results(&results);
         }
         Item::EnumDef(edef) => {
-            let maps = items.iter().map(|(.., _, enums)| {
-                let mut map = EnumDefMap::new(edefs_count);
-                enums.into_iter().for_each(|(loc, enum_def)| map.insert(enum_def, loc));
-                map
-            }).collect::<Vec<_>>();
-
-            let results = edef.variants.par_iter().flat_map(|variant| {
-                let mut results = variant.fields.iter().filter_map(|f| {
-                    if let Some(name) = f.name {
-                        Some(maps.iter().flat_map(|map| map.find_names(name)).collect::<Vec<_>>())
-                    } else if let Some(ty) = f.ty {
-                        Some(maps.iter().flat_map(|map| map.find_types(ty)).collect::<Vec<_>>())
-                    } else {
-                        None
-                    }
-                }).flatten().collect::<Vec<_>>();
-                if let Some(name) = variant.name {
-                    results.extend(maps.iter().flat_map(|map| map.find_names(name)).collect::<Vec<_>>());
-                } results
-            }).collect::<Vec<_>>();
-            print_results(&results);
+            let edefs = items.into_iter().flat_map(|(.., edefs)| edefs).collect::<Vec::<_>>();
+            print_results(&EnumDef::search_enum_def(&edef, &edefs));
         },
         Item::FnSignature(fnsig) => {
             let maps = items.into_iter().map(|(fnsigs, ..)| {

@@ -6,6 +6,7 @@ use indexmap::IndexMap;
 use twox_hash::XxHash64;
 use fst::{Set, SetBuilder, IntoStreamer, automaton::Str};
 
+use crate::Results;
 use crate::loc::Loc;
 use crate::structdef::StructDef;
 
@@ -58,7 +59,7 @@ impl<'a> StructDefMap<'a> {
     }
 
     #[inline]
-    pub fn find_types(&self, field_type: &str, is_tup: bool) -> Vec::<&Loc<'a>> {
+    pub fn find_types(&self, field_type: &str, is_tup: bool) -> Results {
         self.types.get(field_type).map(|set| {
             set.par_iter()
                 .filter(|loc| matches!(self.all_defs.get(*loc), Some(def) if def.is_tup == is_tup))
@@ -67,7 +68,7 @@ impl<'a> StructDefMap<'a> {
         }).unwrap_or_else(Vec::new)
     }
 
-    pub fn find_names(&self, field_name: &str, is_tup: bool) -> Vec<&'a Loc<'a>> {
+    pub fn find_names(&self, field_name: &str, is_tup: bool) -> Results {
         let mut matches = Vec::new();
         let Some(ref names) = self.names else { return matches };
         let automaton = Str::new(field_name);

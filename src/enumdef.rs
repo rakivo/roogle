@@ -1,10 +1,18 @@
 use syn::{
-    parse::{discouraged::AnyDelimiter, Parse, ParseStream}, token::{Brace, Paren}, Ident, Token, Type
+    Type,
+    Ident,
+    Token,
+    token::{Brace, Paren},
+    parse::{
+        discouraged::AnyDelimiter,
+        Parse,
+        ParseStream
+    }
 };
 
-use crate::{loc::Loc, skip_tokens};
+use crate::loc::Loc;
 use crate::fields::*;
-use crate::to_static_str;
+use crate::{Results, skip_tokens, to_static_str};
 
 #[derive(Debug)]
 pub struct Variant {
@@ -16,6 +24,62 @@ pub struct Variant {
 pub struct EnumDef {
     pub name: Option::<&'static str>,
     pub variants: Vec::<Variant>
+}
+
+impl EnumDef {
+    pub fn search_enum_def<'a>(query: &'a EnumDef, enums: &'a EnumDefs) -> Results<'a, 'a> {
+        enums.iter()
+            .filter(|(.., enum_def)| Self::matches_enum_def(query, enum_def))
+            .map(|(loc, ..)| loc)
+            .collect()
+    }
+
+    fn matches_enum_def(query: &EnumDef, enum_def: &EnumDef) -> bool {
+        if query.name.map_or(false, |q_name| {
+            enum_def.name.map_or(false, |name| name == q_name)
+        }) {
+            return true
+        }
+
+        query.variants.iter().any(|q_variant| {
+            enum_def.variants.iter().any(|v| Self::matches_variant(q_variant, v))
+        })
+    }
+
+    fn matches_variant(query: &Variant, variant: &Variant) -> bool {
+        if query.name.map_or(false, |q_name| {
+            variant.name.map_or(false, |name| name == q_name)
+        }) {
+            return true
+        }
+
+        Self::matches_fields(&query.fields, &variant.fields)
+    }
+
+    fn matches_fields(query: &Fields, fields: &Fields) -> bool {
+        match (query, fields) {
+            (Fields::Unit, Fields::Unit) => true,
+            (Fields::Named(query_fields), Fields::Named(fields)) 
+            | (Fields::Unnamed(query_fields), Fields::Unnamed(fields)) => {
+                query_fields.iter().any(|q_field| {
+                    fields.iter().any(|field| Self::matches_field(q_field, field))
+                })
+            }
+            _ => false,
+        }
+    }
+
+    fn matches_field(query: &Field, field: &Field) -> bool {
+        if query.name.map_or(false, |q_name| {
+            field.name.map_or(false, |name| name == q_name)
+        }) {
+            return true
+        }
+
+        query.ty.map_or(false, |q_ty| {
+            field.ty.map_or(false, |ty| ty == q_ty)
+        })
+    }
 }
 
 impl From::<syn::ItemEnum> for EnumDef {
@@ -46,25 +110,21 @@ impl Parse for EnumDef {
         
         let mut variants = Vec::new();
         while !content.is_empty() {
-            let name = if !(content.peek(Brace) || content.peek(Paren)) {
-                let variant = if content.peek2(Paren) && content.peek2(Paren) {
-                    let var = Variant {name, fields: Fields::Named(vec![Field {
-                        name: Some(to_static_str(&content.parse::<Ident>().unwrap())),
-                        ty: None
-                    }])};
-                    _ = content.parse_any_delimiter();
-                    _ = content.parse_any_delimiter();
-                    var
-                } else {
-                    Variant {name, fields: Fields::Unnamed(vec![Field {
+            let name = {
+                let name = content.parse::<Type>().as_ref().map(to_static_str).ok();
+                skip_tokens!(content, ,);
+                if content.is_empty() {
+                    variants.push(Variant {
                         name: None,
-                        ty: Some(to_static_str(&content.parse::<Type>().unwrap()))
-                    }])}
-                };
-                variants.push(variant);
-                break
-            } else {
-                content.parse::<Ident>().as_ref().map(to_static_str).ok()
+                        fields: Fields::Unnamed(vec![Field {
+                            name: None,
+                            ty: name
+                        }])
+                    });
+                    break
+                } else {
+                    name
+                }
             };
 
             let lookahead = content.lookahead1();
